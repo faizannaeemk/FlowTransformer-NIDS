@@ -53,7 +53,7 @@ class FlowTransformer:
 
         self.experiment_key = {}
 
-    def build_model(self, prefix:str=None):
+    def build_model(self, cls_type='binary', prefix:str=None):
         if prefix is None:
             prefix = ""
 
@@ -90,7 +90,14 @@ class FlowTransformer:
             m_x = Dense(layer_size, activation="relu", name=f"{prefix}classification_mlp_{layer_i}_{layer_size}")(m_x)
             m_x = Dropout(self.parameters.mlp_dropout)(m_x) if self.parameters.mlp_dropout > 0 else m_x
 
-        m_x = Dense(1, activation="sigmoid", name=f"{prefix}binary_classification_out")(m_x)
+        if cls_type == 'binary':
+            m_x = Dense(1, activation="sigmoid", name=f"{prefix}binary_classification_out")(m_x)
+        elif cls_type == 'multiclass':
+            num_classes = 10
+            m_x = Dense(num_classes, activation="softmax", name=f"{prefix}multiclass_classification_out")(m_x)
+        else:
+            raise ValueError("Invalid classification type!")
+
         m = Model(m_inputs, m_x)
         #m.summary()
         return m
@@ -312,7 +319,7 @@ class FlowTransformer:
 
         return df
 
-    def evaluate(self, m:keras.Model, batch_size, early_stopping_patience:int=5, epochs:int=100, steps_per_epoch:int=128):
+    def evaluate(self, m:keras.Model, batch_size, early_stopping_patience:int=5, epochs:int=100, steps_per_epoch:int=128, cls_type='binary'):
         n_malicious_per_batch = int(0.5 * batch_size)
         n_legit_per_batch = batch_size - n_malicious_per_batch
 
@@ -323,11 +330,27 @@ class FlowTransformer:
         selectable_mask[self.parameters.window_size:-self.parameters.window_size] = True
         train_mask = self.training_mask
 
-        y_mask = ~(self.y.astype('str') == str(self.dataset_specification.benign_label))
-
-        indices_train = np.argwhere(train_mask).reshape(-1)
-        malicious_indices_train = np.argwhere(train_mask & y_mask & selectable_mask).reshape(-1)
-        legit_indices_train = np.argwhere(train_mask & ~y_mask & selectable_mask).reshape(-1)
+        if cls_type == 'multiclass':
+            classes_dict = {
+                0: "Benign",
+                1: "Fuzzers",
+                2: "Analysis",
+                3: "Backdoor",
+                4: "DoS",
+                5: "Exploits",
+                6: "Generic",
+                7: "Reconnaissance",
+                8: "Shellcode",
+                9: "Worms"
+            }
+            y_mask = []
+            for cls in classes_dict:
+                y_mask.append(~(self.y.astype('str') == classes_dict[cls]))
+        else:
+            y_mask = ~(self.y.astype('str') == str(self.dataset_specification.benign_label))
+            indices_train = np.argwhere(train_mask).reshape(-1)
+            malicious_indices_train = np.argwhere(train_mask & y_mask & selectable_mask).reshape(-1)
+            legit_indices_train = np.argwhere(train_mask & ~y_mask & selectable_mask).reshape(-1)
 
         indices_test:np.ndarray = np.argwhere(~train_mask).reshape(-1)
 
@@ -381,6 +404,7 @@ class FlowTransformer:
         eval_X = get_windows_for_indices(indices_test, True)
         print(f"Splitting dataset to featurewise...")
         eval_featurewise_X = samplewise_to_featurewise(eval_X)
+        # TODO: change the following to accomodate the multiclass prediction
         eval_y = y_mask[indices_test]
         eval_P = eval_y
         n_eval_P = np.count_nonzero(eval_P)
@@ -441,7 +465,7 @@ class FlowTransformer:
                 self.cursor_legit = 0
                 self.rs = rs
 
-            def get_batch(self):
+            def get_batch(self):  # TODO: adjust this for multiclass
                 malicious_indices_batch = self.rs.choice(malicious_indices_train, size=n_malicious_per_batch,
                                                          replace=False) \
                     if self.random else \
